@@ -1,0 +1,285 @@
+import streamlit as st
+import pandas as pd
+import json
+
+import agents
+
+st.set_page_config(
+    page_title="Adaptive Purple Team AI",
+    page_icon="🛡️",
+    layout="wide"
+)
+
+st.title("AI-Driven Adaptive Purple Team Cybersecurity System")
+st.caption("Evidence-first multi-agent cybersecurity analysis platform")
+
+st.sidebar.title("Navigation")
+page = st.sidebar.radio(
+    "Select module",
+    ["Incident Analysis", "Incident History", "Dataset Insights", "System Information"]
+)
+
+# ---------------- INCIDENT ANALYSIS ----------------
+
+if page == "Incident Analysis":
+    st.header("New Security Incident")
+
+    with st.form("incident_form"):
+        title = st.text_input(
+            "Incident Title (Optional)",
+            placeholder="Leave blank to generate automatically"
+        )
+
+        description = st.text_area(
+            "What happened? Describe what you observed (Required)",
+            height=150,
+            placeholder="Example: An employee received a suspicious email attachment. After opening it, unusual processes appeared on the workstation."
+        )
+
+        st.subheader("Risk Assessment Inputs")
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            severity = st.slider("Severity", 1, 5, 3)
+        with c2:
+            likelihood = st.slider("Likelihood", 1, 5, 3)
+        with c3:
+            criticality = st.slider("Asset Criticality", 1, 5, 3)
+        with c4:
+            exposure = st.slider("Exposure", 1, 5, 3)
+
+        st.subheader("Historical Response Comparison")
+        event_id = st.number_input(
+            "Optional historical event ID",
+            min_value=0,
+            value=0,
+            help="Leave at zero to use aggregate historical response metrics."
+        )
+
+        submitted = st.form_submit_button(
+            "Run Eight-Agent Analysis",
+            type="primary",
+            use_container_width=True
+        )
+
+    if submitted:
+        if not description.strip():
+            st.error("Please describe what happened.")
+        else:
+            try:
+                if not title.strip():
+                    first_sentence = description.strip().split(".")[0]
+                    words = first_sentence.split()
+                    title = " ".join(words[:9])
+                    if len(words) > 9:
+                        title += "..."
+                    title = title or "Unclassified Security Incident"
+
+                with st.spinner("Executing the multi-agent pipeline..."):
+                    result = agents.run_pipeline(
+                        title,
+                        description,
+                        severity,
+                        likelihood,
+                        criticality,
+                        exposure,
+                        int(event_id) if event_id else None
+                    )
+
+                st.session_state["latest_result"] = result
+                st.success("Incident analysis completed.")
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+
+    result = st.session_state.get("latest_result")
+
+    if result:
+        st.divider()
+        st.header("Analysis Results")
+
+        classification = result["classification"]
+        risk = result["risk_assessment"]
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.metric("Predicted Activity", classification["activity"].replace("_", " "))
+        with c2:
+            confidence = classification.get("confidence")
+            st.metric(
+                "Classification Confidence",
+                f"{confidence:.2%}" if confidence is not None else "Unavailable"
+            )
+        with c3:
+            st.metric("Risk Level", risk["level"], f"Score: {risk['score']}")
+
+        st.warning(classification["warning"])
+
+        with st.expander("Agent 1 — Classification Details", expanded=True):
+            st.json(classification)
+
+        with st.expander("Agent 2 — Risk Assessment", expanded=True):
+            st.json(risk)
+
+        with st.expander("Agent 3 — Adaptive Defense Recommendations", expanded=True):
+            defense = result["defense_recommendations"]
+
+            st.markdown("**Prevention**")
+            for item in defense["prevention"]:
+                st.write("•", item)
+
+            st.markdown("**Detection**")
+            for item in defense["detection"]:
+                st.write("•", item)
+
+            st.markdown("**Response and Containment**")
+            for item in defense["response"]:
+                st.write("•", item)
+
+            st.caption(defense["basis"])
+
+        with st.expander("Agent 4 — Response Evaluation"):
+            st.json(result["response_evaluation"])
+
+        with st.expander("Agent 5 — Feedback and Learning"):
+            st.write("Current status:", result["feedback_status"])
+
+            st.markdown("**Submit actual response and supporting evidence**")
+
+            with st.form("feedback_form"):
+                actual = st.text_area("Actual response taken")
+                evidence = st.text_area("Evidence supporting the response")
+                recommended = st.text_area("Recommended action", value="; ".join(
+                    result["defense_recommendations"]["response"]
+                ))
+
+                feedback_submit = st.form_submit_button("Validate Feedback")
+
+            if feedback_submit:
+                feedback = agents.agent5_validate_feedback(
+                    recommended, actual, evidence
+                )
+                st.json(feedback)
+
+        with st.expander("Agent 6 — Security Gap Analysis"):
+            st.json(result["security_gap_analysis"])
+
+        with st.expander("Agent 7 — Incident Memory"):
+            st.write("Incident ID:", result["incident_id"])
+            st.write("Incident saved to SQLite memory.")
+
+        with st.expander("Agent 0 — Orchestrator Output"):
+            st.json(result)
+
+# ---------------- INCIDENT HISTORY ----------------
+
+elif page == "Incident History":
+    st.header("Incident Memory")
+
+    history = agents.agent7_get_history(100)
+
+    if not history:
+        st.info("No incidents have been stored.")
+    else:
+        st.metric("Stored Incidents", len(history))
+
+        rows = []
+        for incident in history:
+            result = incident["result"]
+            classification = result.get("classification", {})
+            risk = result.get("risk_assessment", {})
+
+            rows.append({
+                "Date": incident["created_at"][:19],
+                "Incident": incident["title"],
+                "Activity": classification.get("activity", "UNKNOWN"),
+                "Confidence": classification.get("confidence"),
+                "Risk": risk.get("level", "UNKNOWN"),
+                "Incident ID": incident["incident_id"]
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        selected = st.selectbox(
+            "Inspect incident",
+            options=range(len(history)),
+            format_func=lambda i: history[i]["title"] + " — " + history[i]["incident_id"][:8]
+        )
+
+        st.json(history[selected]["result"])
+
+# ---------------- DATASET INSIGHTS ----------------
+
+elif page == "Dataset Insights":
+    st.header("Supporting Dataset Insights")
+
+    files = {
+        "Attack Events": "purple_events.csv",
+        "Response Records": "purple_responses.csv",
+        "Security Logs": "purple_logs.csv",
+        "Network Traffic": "purple_network_traffic.csv",
+        "Response Metrics": "purple_response_metrics.csv"
+    }
+
+    for label, filename in files.items():
+        try:
+            df = pd.read_csv(agents.DATA / filename)
+            st.metric(label, f"{len(df):,} records")
+        except Exception as e:
+            st.error(f"{label}: {e}")
+
+    try:
+        events = pd.read_csv(agents.DATA / "purple_events_taxonomy_enriched.csv")
+        st.subheader("Historical Attack Categories")
+        counts = events["attack_category"].value_counts().head(12)
+        st.bar_chart(counts)
+    except Exception as e:
+        st.warning(f"Could not load taxonomy statistics: {e}")
+
+    st.caption(
+        "These are supporting historical datasets. They are not used to train Agent 1."
+    )
+
+# ---------------- SYSTEM INFORMATION ----------------
+
+elif page == "System Information":
+    st.header("System Architecture")
+
+    architecture = {
+        "Agent 0": "Orchestrator and output validation",
+        "Agent 1": "Attack intelligence and ML classification",
+        "Agent 2": "Risk assessment",
+        "Agent 3": "Adaptive defense recommendation",
+        "Agent 4": "Response evaluation",
+        "Agent 5": "Feedback validation and learning",
+        "Agent 6": "Security gap analysis",
+        "Agent 7": "Incident memory using SQLite"
+    }
+
+    for name, description in architecture.items():
+        st.markdown(f"**{name}** — {description}")
+
+    st.divider()
+    st.subheader("Model Information")
+
+    st.write("Model:", "TF-IDF + Logistic Regression")
+    st.write("Model file:", str(agents.MODEL_PATH))
+    st.write("Training status:", "PROVISIONAL EXPERIMENTAL")
+    st.write("Human approval:", "PENDING")
+    st.write("Automatic retraining:", "DISABLED")
+
+    st.subheader("Data Governance")
+    st.write("- Primary Attack Dataset: Agent 1 classifier training.")
+    st.write("- Secondary Purple Dataset: Supporting agents only.")
+    st.write("- Uncertain predictions: Flagged for human validation.")
+    st.write("- Historical metrics: Distinguished from current incident measurements.")
+    st.write("- Model learning: Requires validated human feedback.")
+
+st.sidebar.divider()
+st.sidebar.caption("AIML Project | Purple Team System")
+st.sidebar.caption("Experimental prototype — not a production SOC platform")

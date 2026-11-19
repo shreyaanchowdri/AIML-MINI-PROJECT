@@ -1,0 +1,368 @@
+import sqlite3
+import json
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import joblib
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "data" / "processed"
+MODEL_PATH = DATA / "agent1_best_model_v1.joblib"
+DB_PATH = ROOT / "data" / "purple_team_memory.db"
+
+MODEL = joblib.load(MODEL_PATH)
+
+# ---------------- AGENT 1: ATTACK INTELLIGENCE ----------------
+
+def agent1_classify(title, description):
+    text = f"{title} {description}".strip()
+
+    if len(text) < 15:
+        return {
+            "status": "INSUFFICIENT_INPUT",
+            "activity": "UNKNOWN",
+            "confidence": None,
+            "warning": "Provide a more detailed scenario."
+        }
+
+    probabilities = MODEL.predict_proba([text])[0]
+    classes = MODEL.classes_
+    index = probabilities.argmax()
+    confidence = float(probabilities[index])
+    predicted = str(classes[index])
+
+    status = "PROVISIONAL"
+    if confidence < 0.40:
+        status = "LOW_CONFIDENCE"
+
+    return {
+        "status": status,
+        "activity": predicted if confidence >= 0.40 else "UNKNOWN",
+        "candidate": predicted,
+        "confidence": round(confidence, 4),
+        "warning": (
+            "Experimental classifier. Prediction requires human validation."
+            if confidence >= 0.40 else
+            "Low model confidence. Manual classification required."
+        ),
+        "alternatives": [
+            {"class": str(classes[i]), "probability": round(float(probabilities[i]), 4)}
+            for i in probabilities.argsort()[::-1][:3]
+        ]
+    }
+
+
+# ---------------- AGENT 2: RISK ASSESSMENT ----------------
+
+def agent2_assess_risk(severity, likelihood, asset_criticality, exposure):
+    values = [severity, likelihood, asset_criticality, exposure]
+
+    if any(not isinstance(v, int) or not 1 <= v <= 5 for v in values):
+        raise ValueError("Risk inputs must be integers from 1 to 5.")
+
+    score = round((severity * likelihood * asset_criticality * exposure) / 5, 2)
+
+    if score >= 60:
+        level = "CRITICAL"
+    elif score >= 35:
+        level = "HIGH"
+    elif score >= 15:
+        level = "MEDIUM"
+    else:
+        level = "LOW"
+
+    return {
+        "score": score,
+        "level": level,
+        "inputs": {
+            "severity": severity,
+            "likelihood": likelihood,
+            "asset_criticality": asset_criticality,
+            "exposure": exposure
+        },
+        "method": "Transparent project-specific rubric; not CVSS."
+    }
+
+
+# ---------------- AGENT 3: DEFENSE RECOMMENDATIONS ----------------
+
+DEFENSE_KNOWLEDGE = {
+    "sql injection": [
+        "Use parameterized database queries.",
+        "Validate inputs using allowlists.",
+        "Apply least-privilege database permissions.",
+        "Monitor unusual database query patterns."
+    ],
+    "phishing": [
+        "Deploy phishing-resistant MFA.",
+        "Implement email authentication and filtering.",
+        "Provide user awareness training.",
+        "Monitor suspicious authentication activity."
+    ],
+    "ransomware": [
+        "Maintain isolated and tested backups.",
+        "Deploy endpoint detection and response.",
+        "Restrict unnecessary administrative privileges.",
+        "Develop an incident containment procedure."
+    ],
+    "denial of service": [
+        "Apply rate limiting and traffic filtering.",
+        "Use network-layer monitoring.",
+        "Implement redundancy and DDoS protection.",
+        "Establish service availability alerts."
+    ],
+    "privilege escalation": [
+        "Enforce least privilege.",
+        "Patch vulnerable operating systems and software.",
+        "Audit privileged account activity.",
+        "Enable endpoint security monitoring."
+    ],
+    "lateral movement": [
+        "Segment critical network zones.",
+        "Restrict unnecessary east-west traffic.",
+        "Monitor unusual authentication and remote access.",
+        "Use privileged access management."
+    ],
+    "data exfiltration": [
+        "Apply data loss prevention controls.",
+        "Monitor unusual outbound traffic.",
+        "Restrict access to sensitive data.",
+        "Investigate abnormal DNS and network activity."
+    ],
+    "credential": [
+        "Use phishing-resistant MFA.",
+        "Rotate exposed credentials and revoke active sessions.",
+        "Store secrets in a managed secrets vault.",
+        "Monitor abnormal login activity."
+    ],
+    "malware": [
+        "Isolate affected endpoints when compromise is confirmed.",
+        "Use endpoint detection and response.",
+        "Restrict application execution.",
+        "Investigate persistence and indicators of compromise."
+    ],
+    "buffer overflow": [
+        "Patch vulnerable software.",
+        "Enable memory safety protections such as ASLR and DEP.",
+        "Use compiler hardening.",
+        "Perform secure code review and testing."
+    ]
+}
+
+def agent3_recommend_defense(title, description, risk):
+    text = f"{title} {description}".lower()
+    matched = []
+    for keyword, recommendations in DEFENSE_KNOWLEDGE.items():
+        if keyword in text:
+            matched.extend(recommendations)
+
+    if not matched:
+        matched = [
+            "Preserve relevant logs and evidence.",
+            "Restrict unnecessary access to the affected system.",
+            "Investigate the suspected attack vector.",
+            "Apply security updates after validating applicability."
+        ]
+
+    matched = list(dict.fromkeys(matched))
+
+    return {
+        "prevention": matched[:3],
+        "detection": matched[3:5] if len(matched) > 3 else [
+            "Monitor relevant system and authentication logs."
+        ],
+        "response": [
+            "Validate the incident using available evidence.",
+            "Contain confirmed compromise according to organizational procedures.",
+            "Preserve forensic evidence before remediation."
+        ],
+        "priority": risk["level"],
+        "basis": "Rule-based defensive knowledge; recommendations require applicability review."
+    }
+
+
+# ---------------- AGENT 4: RESPONSE EVALUATION ----------------
+
+def agent4_evaluate_response(event_id=None):
+    path = DATA / "purple_response_metrics.csv"
+    df = pd.read_csv(path)
+
+    if event_id is not None:
+        df = df[df["event_id"] == int(event_id)]
+
+    if df.empty:
+        return {"status": "NO_RESPONSE_METRICS", "records": 0}
+
+    return {
+        "status": "HISTORICAL_DATA_AVAILABLE",
+        "records": int(len(df)),
+        "mean_detection_seconds": round(float(df["detection_time_seconds"].mean()), 2),
+        "mean_response_seconds": round(float(df["response_time_seconds"].mean()), 2),
+        "mean_false_positive_rate": round(float(df["false_positive_rate"].mean()), 4),
+        "mean_missed_detection_rate": round(float(df["missed_detection_rate"].mean()), 4),
+        "source": "Secondary purple-team response metrics",
+        "warning": "Historical dataset statistics, not measurements of the current incident."
+    }
+
+
+# ---------------- AGENT 5: FEEDBACK VALIDATION ----------------
+
+def agent5_validate_feedback(recommended, actual, evidence):
+    if not actual or not evidence:
+        return {
+            "status": "INSUFFICIENT_EVIDENCE",
+            "learning_approved": False
+        }
+
+    return {
+        "status": "PENDING_HUMAN_REVIEW",
+        "recommended_action": recommended,
+        "actual_action": actual,
+        "evidence_supplied": True,
+        "learning_approved": False,
+        "message": "No automatic model retraining. Human validation is required."
+    }
+
+
+# ---------------- AGENT 6: SECURITY GAP ANALYSIS ----------------
+
+def agent6_analyze_gaps(title, description):
+    text = f"{title} {description}".lower()
+    gaps = []
+
+    checks = {
+        "authentication": ["mfa", "authentication", "credential", "password"],
+        "access_control": ["privilege", "permission", "access control", "authorization"],
+        "network_monitoring": ["network", "traffic", "dns", "lateral movement"],
+        "data_protection": ["exfiltration", "data leakage", "encryption", "sensitive data"],
+        "endpoint_security": ["malware", "endpoint", "ransomware", "execution"],
+        "patch_management": ["vulnerability", "exploit", "unpatched", "software"]
+    }
+
+    for control, terms in checks.items():
+        if any(term in text for term in terms):
+            gaps.append({
+                "control_area": control,
+                "status": "REVIEW_REQUIRED",
+                "reason": "Scenario indicates a potentially relevant control area."
+            })
+
+    if not gaps:
+        gaps.append({
+            "control_area": "GENERAL_SECURITY",
+            "status": "REVIEW_REQUIRED",
+            "reason": "Insufficient scenario detail to identify specific control gaps."
+        })
+
+    return {
+        "findings": gaps,
+        "limitation": "A scenario description cannot establish whether a control is absent."
+    }
+
+
+# ---------------- AGENT 7: INCIDENT MEMORY ----------------
+
+def init_memory():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                output_json TEXT NOT NULL
+            )
+        """)
+
+def agent7_store_incident(title, description, result):
+    init_memory()
+    incident_id = str(uuid.uuid4())
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO incidents
+            VALUES (?, ?, ?, ?, ?)""",
+            (
+                incident_id,
+                datetime.now(timezone.utc).isoformat(),
+                title,
+                description,
+                json.dumps(result, default=str)
+            )
+        )
+
+    return incident_id
+
+def agent7_get_history(limit=50):
+    init_memory()
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT incident_id, created_at, title, description, output_json
+            FROM incidents ORDER BY created_at DESC LIMIT ?""",
+            (int(limit),)
+        ).fetchall()
+
+    return [
+        {
+            "incident_id": r[0],
+            "created_at": r[1],
+            "title": r[2],
+            "description": r[3],
+            "result": json.loads(r[4])
+        }
+        for r in rows
+    ]
+
+
+# ---------------- AGENT 0: ORCHESTRATOR ----------------
+
+def run_pipeline(
+    title,
+    description,
+    severity=3,
+    likelihood=3,
+    asset_criticality=3,
+    exposure=3,
+    historical_event_id=None
+):
+    if not title.strip() or not description.strip():
+        raise ValueError("Title and scenario description are required.")
+
+    classification = agent1_classify(title, description)
+
+    risk = agent2_assess_risk(
+        severity, likelihood, asset_criticality, exposure
+    )
+
+    defense = agent3_recommend_defense(title, description, risk)
+
+    response = agent4_evaluate_response(historical_event_id)
+
+    gaps = agent6_analyze_gaps(title, description)
+
+    result = {
+        "incident_title": title,
+        "classification": classification,
+        "risk_assessment": risk,
+        "defense_recommendations": defense,
+        "response_evaluation": response,
+        "security_gap_analysis": gaps,
+        "feedback_status": "AWAITING_ACTUAL_RESPONSE_AND_EVIDENCE",
+        "execution_status": "COMPLETED_WITH_PROVISIONAL_CLASSIFICATION"
+    }
+
+    incident_id = agent7_store_incident(title, description, result)
+    result["incident_id"] = incident_id
+
+    required = [
+        "classification", "risk_assessment",
+        "defense_recommendations", "response_evaluation",
+        "security_gap_analysis"
+    ]
+    if not all(k in result for k in required):
+        raise RuntimeError("Orchestrator output validation failed.")
+
+    return result
